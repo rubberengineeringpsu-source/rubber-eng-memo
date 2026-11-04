@@ -29,6 +29,11 @@ export default async (req) => {
   try {
     if (req.method === "GET") {
       const yy = url.searchParams.get("yy") || "";
+      if (yy === "all") {
+        const { blobs } = await s.list();
+        const items = await Promise.all(blobs.map((b) => s.get(b.key, { type: "json" })));
+        return json(items.filter(Boolean));
+      }
       if (!YY.test(yy)) return json({ error: "ปีไม่ถูกต้อง" }, 400);
       return json(await listYear(s, yy));
     }

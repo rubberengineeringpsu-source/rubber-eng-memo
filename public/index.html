@@ -268,6 +268,7 @@ button{font:inherit;cursor:pointer}
       </div>
       <div class="card reg">
         <h3>ทะเบียนเลขหนังสือ <small id="regYear"></small></h3>
+        <div class="actions" style="margin:0 0 8px"><button type="button" class="btn" id="xlsxBtn">ส่งออก Excel (ทุกปี)</button><span class="hint" id="xlsxMsg"></span></div>
         <ul class="reglist" id="regList"><li class="empty">กำลังโหลดทะเบียน…</li></ul>
         <p class="hint" style="margin:8px 0 0">กดที่เลขเพื่อเปิดข้อมูลมาแก้ไขและดาวน์โหลดซ้ำด้วยเลขเดิม</p>
       </div>
@@ -276,6 +277,7 @@ button{font:inherit;cursor:pointer}
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 // Shared logic: Thai baht text, Thai date, docx XML fill. Used by the page and by the Node test.
 const MEMO = (function () {
@@ -662,6 +664,47 @@ function renderRegister(){
   });
 }
 
+/* ---------- Excel export ---------- */
+function buildXlsx(records){
+  const num=v=>{const x=parseFloat(v);return isNaN(x)?null:x;};
+  const recs=[...records].filter(r=>r&&r.n).sort((a,b)=>(a.yy+String(a.n).padStart(6,'0')).localeCompare(b.yy+String(b.n).padStart(6,'0')));
+  const H1=['เลขที่หนังสือ','ปี (พ.ศ.)','ลำดับ','วันที่','วันที่ (ไทย)','ชื่อโครงการ','ฝ่าย','หัวหน้าฝ่าย','ดำเนินการ','รายละเอียด','จำนวนรายการ','ยอดรวม (บาท)','ประธานกรรมการตรวจรับ','กรรมการ','กรรมการ','ยืมเงินทดรองจ่าย (บาท)','โทร.','บันทึกเมื่อ','แก้ไขล่าสุด'];
+  const H2=['เลขที่หนังสือ','ลำดับที่','รายการ','จำนวน','หน่วยนับ','ราคาต่อหน่วย (บาท)','จำนวนเงิน (บาท)'];
+  const ws1=[H1], ws2=[H2];
+  const toLocal=s=>{ if(!s) return null; const d=new Date(s); return isNaN(d)?null:new Date(d.getTime()-d.getTimezoneOffset()*60000); };
+  recs.forEach((r,i)=>{
+    const f=r.form||{}; const row=i+2;
+    const no=r.no||`${PREFIX}${r.yy}-${r.n}`;
+    const items=(f.items||[]).filter(it=>(it.name||'').trim()||it.qty||it.price);
+    let sum=0;
+    items.forEach((it,k)=>{
+      const ir=ws2.length+1, q=num(it.qty), p=num(it.price); const amt=(q!==null&&p!==null)?q*p:'';
+      if(amt!=='') sum+=amt;
+      ws2.push([no,k+1,it.name||'',q,it.unit||'',p,{t:amt===''?'s':'n',v:amt,f:`IF(AND(ISNUMBER(D${ir}),ISNUMBER(F${ir})),D${ir}*F${ir},"")`}]);
+    });
+    const d=f.date||r.date||'';
+    const [y,m,dd]=d?d.split('-').map(Number):[null,null,null];
+    ws1.push([no, 2500+Number(r.yy), r.n, d?{t:'d',v:new Date(y,m-1,dd),z:'dd/mm/yyyy'}:'', MEMO.thaiDate(d), f.project||r.project||'', f.dept?'ฝ่าย'+f.dept:'', f.headName||'', f.proc||'', f.procDesc||'',
+      {t:'n',v:items.length,f:`COUNTIF('รายการ'!A:A,A${row})`}, {t:'n',v:Math.round(sum*100)/100,f:`SUMIF('รายการ'!A:A,A${row},'รายการ'!G:G)`,z:'#,##0.00'},
+      f.c1||'', f.c2||'', f.c3||'', f.advOn?num(f.adv):null, f.tel||'',
+      r.createdAt?{t:'d',v:new Date(r.createdAt),z:'dd/mm/yyyy hh:mm'}:'', r.updatedAt?{t:'d',v:new Date(r.updatedAt),z:'dd/mm/yyyy hh:mm'}:'']);
+  });
+  const toSheet=(aoa,widths,fmts)=>{
+    const ws=XLSX.utils.aoa_to_sheet(aoa,{cellDates:true});
+    ws['!cols']=widths.map(w=>({wch:w}));
+    const rng=XLSX.utils.decode_range(ws['!ref']);
+    for(let R=1;R<=rng.e.r;R++) for(const C in fmts){ const a=XLSX.utils.encode_cell({r:R,c:+C}); if(ws[a]&&ws[a].t==='n') ws[a].z=fmts[C]; }
+    ws['!autofilter']={ref:ws['!ref']};
+    return ws;
+  };
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,toSheet(ws1,[18,10,8,12,20,48,34,24,11,30,12,15,24,22,22,18,8,18,18],{11:'#,##0.00',15:'#,##0.00'}),'ทะเบียนหนังสือ');
+  XLSX.utils.book_append_sheet(wb,toSheet(ws2,[18,9,40,10,11,18,18],{5:'#,##0.00',6:'#,##0.00'}),'รายการ');
+  const out=XLSX.write(wb,{bookType:'xlsx',type:'array',cellDates:true});
+  return new Blob([out],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+function xlsxName(){ const d=new Date(); const p=n=>String(n).padStart(2,'0'); return `ทะเบียนบันทึกข้อความ_${d.getFullYear()+543}${p(d.getMonth()+1)}${p(d.getDate())}.xlsx`; }
+
 /* ---------- docx ---------- */
 async function makeDocx(data, n){
   const bin=atob(TEMPLATE_B64); const buf=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) buf[i]=bin.charCodeAt(i);
@@ -713,6 +756,14 @@ $('memoForm').addEventListener('submit', async e=>{
     else setStatus('err','เกิดข้อผิดพลาด: '+(err&&(err.message||err.code)||err));
   }finally{ btn.disabled=false; }
 });
+
+
+$('xlsxBtn').onclick=async()=>{
+  const msg=$('xlsxMsg'); msg.textContent='กำลังดึงข้อมูล…';
+  try{ const all=await api('GET',null,'?yy=all'); if(!all.length){ msg.textContent='ยังไม่มีข้อมูลในทะเบียน'; return; }
+    saveBlob(buildXlsx(all), xlsxName()); msg.textContent='ส่งออก '+all.length+' รายการแล้ว'; }
+  catch(e){ msg.textContent=(e&&e.msg)||'ส่งออกไม่สำเร็จ'; }
+};
 
 /* ---------- boot ---------- */
 (function boot(){
